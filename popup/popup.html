@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Synapse</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header (global) -->
+    <header class="header">
+      <div class="logo">
+        <span class="logo-mark">◈</span>
+        <span class="logo-text">SYNAPSE</span>
+      </div>
+      <div class="header-controls">
+        <div class="mode-control">
+          <button class="mode-btn" id="modeAuto"   title="Auto-detect brain from keywords">AUTO</button>
+          <button class="mode-btn" id="modeManual" title="Always use pinned brain">MANUAL</button>
+        </div>
+        <label class="toggle" title="Enable / Disable Synapse">
+          <input type="checkbox" id="masterToggle" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+    </header>
+
+    <!-- Status bar (global) -->
+    <div class="status-bar">
+      <span class="status-dot" id="statusDot"></span>
+      <span class="status-text" id="statusText">Loading…</span>
+    </div>
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="brains">BRAINS</button>
+      <button class="tab-btn" data-tab="studio">STUDIO</button>
+      <button class="tab-btn" data-tab="analytics">ANALYTICS</button>
+    </div>
+
+    <!-- ── BRAINS tab ─────────────────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-brains">
+
+      <!-- Refusal warning banner -->
+      <div class="refusal-banner" id="refusalBanner" style="display:none">
+        <span class="refusal-icon">⚠</span>
+        <span class="refusal-text" id="refusalText">Brain may be ignored. Try Manual Override.</span>
+        <button class="refusal-dismiss" id="refusalDismiss" title="Dismiss">✕</button>
+      </div>
+
+      <!-- Last activation -->
+      <section class="section" id="lastActivationSection" style="display:none">
+        <div class="section-label">LAST ACTIVATION</div>
+        <div class="activation-card">
+          <div class="activation-row">
+            <span class="activation-brain" id="activationBrain">—</span>
+            <span class="activation-score" id="activationScore"></span>
+          </div>
+          <div class="activation-detail" id="activationDetail"></div>
+        </div>
+      </section>
+
+      <!-- Active conversation lock -->
+      <section class="section" id="convSection" style="display:none">
+        <div class="section-label">ACTIVE CONVERSATION</div>
+        <div class="conv-card">
+          <div class="conv-row">
+            <code class="conv-id" id="convIdText">—</code>
+            <span class="conv-sep">→</span>
+            <span class="conv-brain" id="convBrainText">no lock</span>
+          </div>
+          <button class="conv-unlock-btn" id="convUnlock">UNLOCK</button>
+        </div>
+      </section>
+
+      <!-- Brain Packs (built-in + custom merged) -->
+      <section class="section">
+        <div class="section-label-row">
+          <span class="section-label">BRAIN PACKS</span>
+          <span class="custom-count" id="customCount"></span>
+        </div>
+        <ul class="brain-list" id="brainList"></ul>
+
+        <!-- Import / Export row -->
+        <div class="import-row">
+          <button class="import-btn" id="importBtn">⊕ Import Brain</button>
+          <button class="export-btn" id="exportBtn">↓ Export Active</button>
+        </div>
+        <div class="import-error" id="importError" style="display:none"></div>
+        <input type="file" id="brainFileInput" accept=".json" style="display:none" />
+      </section>
+
+      <!-- Footer -->
+      <footer class="footer">
+        <span class="hint" id="footerHint">Auto-router active · keywords trigger brains</span>
+      </footer>
+
+    </div><!-- /tab-brains -->
+
+    <!-- ── STUDIO tab ─────────────────────────────────────────────────── -->
+    <div class="tab-panel hidden" id="tab-studio">
+      <section class="section studio-section">
+        <div class="section-label-row">
+          <span class="section-label" id="studioTitle">NEW BRAIN</span>
+          <button class="studio-clear-btn" id="studioClear" title="Clear form">✕ Clear</button>
+        </div>
+
+        <div class="studio-form">
+
+          <label class="studio-label">Name</label>
+          <input class="studio-input" id="studioName" type="text" placeholder="My Brain (min 3 chars)" maxlength="60" />
+
+          <label class="studio-label">Tags <span class="studio-hint">(comma separated)</span></label>
+          <input class="studio-input" id="studioTags" type="text" placeholder="code, python, debugging" />
+          <div class="tag-chips" id="studioTagChips"></div>
+
+          <label class="studio-label">
+            System Prompt
+            <span class="token-badge" id="studioTokenBadge">~0 tokens</span>
+          </label>
+          <textarea class="studio-textarea" id="studioSystemPrompt" rows="5"
+            placeholder="You are an expert in... (min 50 chars)"></textarea>
+          <div class="studio-sync-warning" id="studioSyncWarning" style="display:none">
+            ⚠ Large prompt — may affect sync storage limit
+          </div>
+
+          <label class="studio-label">Framework Steps <span class="studio-hint">(min 2)</span></label>
+          <div class="framework-steps" id="studioFramework"></div>
+          <button class="studio-add-step" id="studioAddStep">+ Add Step</button>
+
+          <div class="studio-error" id="studioError" style="display:none"></div>
+
+          <div class="studio-actions">
+            <button class="studio-save-btn" id="studioSave">Save Brain</button>
+            <button class="studio-test-btn" id="studioTest" title="Copy system_prompt to clipboard">Test Brain</button>
+          </div>
+          <div class="studio-toast" id="studioToast" style="display:none"></div>
+
+        </div>
+      </section>
+    </div><!-- /tab-studio -->
+
+    <!-- ── ANALYTICS tab ──────────────────────────────────────────────── -->
+    <div class="tab-panel hidden" id="tab-analytics">
+      <section class="section analytics-section">
+        <div class="section-label-row">
+          <span class="section-label">ANALYTICS</span>
+          <span class="analytics-total" id="analyticsTotal"></span>
+        </div>
+        <div class="analytics-chart" id="analyticsChart">
+          <span style="color:var(--text-dim);font-size:11px">No activations yet</span>
+        </div>
+        <div class="analytics-reset-row">
+          <button class="analytics-reset-btn" id="analyticsReset">Reset Analytics</button>
+          <span class="analytics-reset-confirm" id="analyticsResetConfirm" style="display:none">
+            Are you sure?
+            <button class="analytics-reset-yes" id="analyticsResetYes">Yes, reset</button>
+          </span>
+        </div>
+      </section>
+    </div><!-- /tab-analytics -->
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
