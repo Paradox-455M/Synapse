@@ -477,3 +477,38 @@ body.disabled .import-row    { opacity: .4; pointer-events: none; }
   transition: background .15s;
 }
 .analytics-reset-yes:hover { background: #2a0818; }
+
+/* ── Memory section ───────────────────────────────────────────────────────── */
+.memory-brain-name {
+  color: var(--accent); font-weight: 600; font-size: 9px;
+}
+
+.memory-hint {
+  font-size: 9px; color: var(--text-dim); margin-bottom: 6px;
+}
+
+.memory-textarea {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); font-family: var(--font); font-size: 10px; line-height: 1.5;
+  padding: 6px 8px; resize: vertical; outline: none;
+  transition: border-color .15s;
+}
+.memory-textarea:focus { border-color: var(--accent); }
+.memory-textarea::placeholder { color: var(--text-dim); }
+
+.memory-actions {
+  display: flex; align-items: center; gap: 10px; margin-top: 6px;
+}
+
+.memory-save-btn {
+  padding: 5px 12px; font-family: var(--font); font-size: 9px; font-weight: 700;
+  letter-spacing: .08em; background: var(--bg2); border: 1px solid var(--accent);
+  border-radius: 4px; color: var(--accent); cursor: pointer;
+  transition: background .15s;
+}
+.memory-save-btn:hover { background: #0a1f14; }
+
+.memory-toast {
+  font-size: 9px; color: var(--accent); font-weight: 600;
+}

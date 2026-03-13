@@ -15,19 +15,21 @@
     brains: [],
     customBrains: [],
     mode: 'auto',
+    brainMemory: {},
   };
 
   // In isolated world, read chrome.storage directly
   function loadState(cb) {
     chrome.storage.local.get(
-      ['brains', 'customBrains', 'activeBrain', 'enabled', 'mode'],
+      ['brains', 'customBrains', 'activeBrain', 'enabled', 'mode', 'synapse_brain_memory'],
       (raw) => {
         synapseState = {
-          enabled:      raw.enabled      ?? true,
-          activeBrain:  raw.activeBrain  ?? null,
-          brains:       raw.brains       ?? [],
-          customBrains: raw.customBrains ?? [],
-          mode:         raw.mode         ?? 'auto',
+          enabled:      raw.enabled                  ?? true,
+          activeBrain:  raw.activeBrain              ?? null,
+          brains:       raw.brains                   ?? [],
+          customBrains: raw.customBrains             ?? [],
+          mode:         raw.mode                     ?? 'auto',
+          brainMemory:  raw.synapse_brain_memory      ?? {},
         };
         if (cb) cb();
       }
@@ -40,6 +42,10 @@
   chrome.storage.onChanged.addListener((_changes, area) => {
     if (area === 'local') loadState();
   });
+
+  // pathname → string[] — user messages sent this session, for memory prompts
+  const sessionMessages = new Map();
+  let _lastActiveBrain = null;
 
   // ── Turn tracking via sessionStorage — survives SPA navigation, resets on reload ──
   function getConvKey() {
@@ -141,13 +147,25 @@
     const brain = selectBrain(userText);
     if (!brain) return;
 
+    // Accumulate for memory prompt on nav-away
     const convKey = getConvKey();
+    const msgs = sessionMessages.get(convKey) ?? [];
+    if (!msgs.includes(userText)) {
+      msgs.push(userText);
+      sessionMessages.set(convKey, msgs);
+    }
+    _lastActiveBrain = brain;
     const turn = nextTurn(convKey);
 
     const fw = Array.isArray(brain.framework) ? brain.framework : [];
     let prefix;
+    let injectedMem = null;
     if (turn === 1) {
-      prefix = `[Synapse: ${brain.name}] ${brain.system_prompt}\n\n---\n`;
+      injectedMem = synapseState.brainMemory?.[brain.name] ?? null;
+      const memBlock = injectedMem?.facts?.length
+        ? `\n[Synapse Memory]\n${injectedMem.facts.map((f) => `- ${f}`).join('\n')}\n`
+        : '';
+      prefix = `[Synapse: ${brain.name}] ${brain.system_prompt}${memBlock}\n\n---\n`;
     } else {
       prefix = `[Synapse Reminder: ${fw.join(' → ')}]\n\n---\n`;
     }
@@ -168,6 +186,11 @@
 
     console.groupCollapsed('%c[Synapse:Gemini] Outgoing prompt', 'color:#00ff88;font-weight:bold');
     console.log('%cInjected prefix:', 'color:#00ff88', prefix);
+    if (injectedMem?.facts?.length) {
+      console.log('%cMemory (%d fact%s):', 'color:#ffaa00;font-weight:bold', injectedMem.facts.length, injectedMem.facts.length === 1 ? '' : 's', injectedMem.facts);
+    } else if (turn === 1) {
+      console.log('%cMemory:', 'color:#555', '(none)');
+    }
     console.log('%cUser message:', 'color:#aaaaff', userText);
     console.log('%cFull prompt sent:', 'color:#ffffff', fullPrompt);
     console.groupEnd();
@@ -234,13 +257,22 @@
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // Re-run on SPA navigation
+  // Re-run on SPA navigation + fire memory prompt on nav-away
   let _lastPath = location.pathname;
   setInterval(() => {
-    if (location.pathname !== _lastPath) {
-      _lastPath = location.pathname;
-      setTimeout(tryAttach, 500);
+    if (location.pathname === _lastPath) return;
+    const prevPath = _lastPath;
+    _lastPath = location.pathname;
+
+    // Show memory prompt if a brain was active in the previous conversation
+    const prevBrain = _lastActiveBrain;
+    const prevMsgs = sessionMessages.get(prevPath) ?? [];
+    if (prevBrain && prevMsgs.length) {
+      showMemoryPrompt(prevBrain.name, prevMsgs);
     }
+    _lastActiveBrain = null;
+
+    setTimeout(tryAttach, 500);
   }, 500);
 
   console.log('%c[Synapse:Gemini] ◈ Ready', 'color:#00ff88;font-weight:bold;font-size:13px');
