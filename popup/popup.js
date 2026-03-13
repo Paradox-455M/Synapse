@@ -1,6 +1,7 @@
 'use strict';
 
 const MAX_CUSTOM_BRAINS = 10;
+const MAX_SYSTEM_PROMPT_CHARS = 8000; // L2: cap to prevent over-token API requests
 
 // ── DOM refs — global ──────────────────────────────────────────────────────
 const masterToggle          = document.getElementById('masterToggle');
@@ -45,6 +46,13 @@ const studioSave            = document.getElementById('studioSave');
 const studioTest            = document.getElementById('studioTest');
 const studioToast           = document.getElementById('studioToast');
 
+// ── DOM refs — MEMORY section ──────────────────────────────────────────────
+const memorySection             = document.getElementById('memorySection');
+const memoryBrainName           = document.getElementById('memoryBrainName');
+const memoryTextarea            = document.getElementById('memoryTextarea');
+const memorySave                = document.getElementById('memorySave');
+const memoryToast               = document.getElementById('memoryToast');
+
 // ── DOM refs — ANALYTICS tab ───────────────────────────────────────────────
 const analyticsTotal        = document.getElementById('analyticsTotal');
 const analyticsChart        = document.getElementById('analyticsChart');
@@ -59,8 +67,10 @@ let _editingBrainName = null; // null = new brain, string = editing existing
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function escHtml(str) {
+  // H1: escape quotes to prevent attribute injection XSS
   return String(str)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function timeAgo(ts) {
@@ -101,6 +111,8 @@ function validateBrain(obj) {
   if (!obj.system_prompt || typeof obj.system_prompt !== 'string' ||
       obj.system_prompt.trim().length < 50) {
     errors.push('system_prompt: at least 50 characters required');
+  } else if (obj.system_prompt.length > MAX_SYSTEM_PROMPT_CHARS) {
+    errors.push(`system_prompt: exceeds ${MAX_SYSTEM_PROMPT_CHARS} character limit`);
   }
   if (!Array.isArray(obj.framework) || obj.framework.length < 2) {
     errors.push('framework: at least 2 steps required');
@@ -116,6 +128,7 @@ function render(state) {
   const {
     enabled, activeBrain, brains = [], customBrains = [],
     mode, lastActivation, refusalWarning, conversationLocks = {},
+    brainMemory = {},
   } = state;
 
   masterToggle.checked = enabled;
@@ -178,6 +191,16 @@ function render(state) {
     convUnlock.style.display = lockedBrain ? '' : 'none';
   } else {
     convSection.style.display = 'none';
+  }
+
+  // Memory section — show facts for active brain
+  if (activeBrain) {
+    memorySection.style.display = '';
+    memoryBrainName.textContent = `· ${activeBrain}`;
+    const facts = brainMemory[activeBrain]?.facts ?? [];
+    memoryTextarea.value = facts.join('\n');
+  } else {
+    memorySection.style.display = 'none';
   }
 
   // Merged brain list
@@ -375,6 +398,17 @@ convUnlock.addEventListener('click', () => {
       { type: 'SET_STATE', payload: { conversationLocks: updated } },
       loadState
     );
+  });
+});
+
+// ── Brain memory save ─────────────────────────────────────────────────────
+memorySave.addEventListener('click', () => {
+  const brainName = currentState.activeBrain;
+  if (!brainName) return;
+  const facts = memoryTextarea.value.split('\n').map((s) => s.trim()).filter(Boolean);
+  chrome.runtime.sendMessage({ type: 'SAVE_BRAIN_MEMORY', brainName, facts }, () => {
+    memoryToast.style.display = '';
+    setTimeout(() => { memoryToast.style.display = 'none'; }, 2500);
   });
 });
 

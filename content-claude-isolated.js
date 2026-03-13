@@ -31,12 +31,13 @@ function buildStatePayload(raw) {
     enabled:           raw.enabled           ?? true,
     mode:              raw.mode              ?? 'auto',
     conversationLocks: convLocks,
+    brainMemory:       raw.synapse_brain_memory ?? {},
   };
 }
 
 function loadAndPush() {
   chrome.storage.local.get(
-    ['brains', 'customBrains', 'activeBrain', 'enabled', 'mode', 'conversationLocks'],
+    ['brains', 'customBrains', 'activeBrain', 'enabled', 'mode', 'conversationLocks', 'synapse_brain_memory'],
     (raw) => window.postMessage({ type: '__SYNAPSE_STATE__', payload: buildStatePayload(raw) }, '*')
   );
 }
@@ -69,9 +70,13 @@ window.addEventListener('message', (event) => {
   if (type === '__SYNAPSE_LOCK_CONV__') {
     const { convId, brainName } = payload ?? {};
     if (!convId || !brainName) return;
+    // M1: validate brainName against known brains before persisting
+    if (typeof brainName !== 'string' || brainName.length > 200) return;
     try {
-      chrome.storage.local.get(['conversationLocks'], ({ conversationLocks = {} }) => {
-        const locks = { ...conversationLocks };
+      chrome.storage.local.get(['brains', 'customBrains', 'conversationLocks'], (r) => {
+        const allBrains = [...(r.brains ?? []), ...(r.customBrains ?? [])];
+        if (!allBrains.some((b) => b.name === brainName)) return;
+        const locks = { ...(r.conversationLocks ?? {}) };
         const keys = Object.keys(locks);
         if (keys.length >= 50 && !(convId in locks)) {
           delete locks[keys[0]];
@@ -85,7 +90,14 @@ window.addEventListener('message', (event) => {
 
   if (type === '__SYNAPSE_REFUSAL__') {
     try {
-      chrome.storage.local.set({ refusalWarning: { ...payload, timestamp: Date.now() } });
+      // M2: allowlist payload fields to prevent arbitrary key injection
+      chrome.storage.local.set({
+        refusalWarning: {
+          brainName: String(payload?.brainName ?? '').slice(0, 200),
+          streak: Number(payload?.streak ?? 0),
+          timestamp: Date.now(),
+        },
+      });
       chrome.action.setBadgeText({ text: '⚠' });
       chrome.action.setBadgeBackgroundColor({ color: '#ff4466' });
       chrome.runtime.sendMessage({ type: 'TRACK_REFUSAL', brainName: payload?.brainName });
@@ -95,6 +107,13 @@ window.addEventListener('message', (event) => {
 
   if (type === '__SYNAPSE_TRACK__') {
     try { chrome.runtime.sendMessage({ type: 'TRACK_ACTIVATION', ...payload }); } catch (_) {}
+    return;
+  }
+
+  // Nav-away: show memory prompt
+  if (type === '__SYNAPSE_NAV_AWAY__') {
+    const { brainName, messages } = payload ?? {};
+    if (brainName && messages?.length) showMemoryPrompt(brainName, messages);
     return;
   }
 });

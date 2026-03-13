@@ -15,6 +15,7 @@
     customBrains: [],
     mode: 'auto',
     conversationLocks: {},  // { [convId]: brainName }
+    brainMemory: {},        // { [brainName]: { facts: string[], updatedAt: number } }
   };
 
   function allBrains() {
@@ -31,9 +32,12 @@
   window.postMessage({ type: '__SYNAPSE_REQUEST_STATE__' }, '*');
 
   // ── In-memory conversation tracking ───────────────────────────────────────
-  // convId → { brain, turnCount, refusalStreak }
+  // convId → { brain, refusalStreak }
   const convMap = new Map();
   const CONV_MAP_MAX = 50;
+
+  // convId → Set<string> — user messages sent this session, for memory prompts
+  const sessionMessages = new Map();
 
   function getConvId() {
     const match = location.pathname.match(/\/c\/([^/?#]+)/);
@@ -58,6 +62,24 @@
       .observe(document.body, { childList: true, subtree: false });
   }
   attachNavObserver();
+
+  // ── Nav-away: fire memory prompt when user leaves a conversation ──────────
+  let _lastNavConvId = getConvId();
+  setInterval(() => {
+    const current = getConvId();
+    if (current === _lastNavConvId) return;
+    const prev = _lastNavConvId;
+    _lastNavConvId = current;
+    if (prev === 'new') return;
+    const prevBrain = convMap.get(prev)?.brain;
+    if (!prevBrain) return;
+    const prevMsgs = sessionMessages.get(prev);
+    if (!prevMsgs?.size) return;
+    window.postMessage({
+      type: '__SYNAPSE_NAV_AWAY__',
+      payload: { brainName: prevBrain.name, messages: [...prevMsgs] },
+    }, '*');
+  }, 1000);
 
   // ── Scored brain router ────────────────────────────────────────────────────
   function selectBrain(userText) {
@@ -135,36 +157,62 @@
     const convId = getConvId();
     const brains = allBrains();
 
+    // Accumulate for memory prompt on nav-away (Set = O(1) dedup)
+    if (userText) {
+      if (!sessionMessages.has(convId)) sessionMessages.set(convId, new Set());
+      sessionMessages.get(convId).add(userText);
+    }
+
     // ── 1. Resolve brain (conv lock takes priority over routing) ────────────
     let brain = null;
     let routeResult = null;
-    const lockedBrainName = state.conversationLocks?.[convId];
+
+    // Never read or write conversationLocks for 'new' — it's a shared placeholder
+    // that would pollute every subsequent fresh conversation.
+    const lockedBrainName = convId !== 'new' ? (state.conversationLocks?.[convId] ?? null) : null;
 
     if (lockedBrainName) {
       brain = brains.find((b) => b.name === lockedBrainName) ?? null;
+    }
+
+    // Detect 'new' → real UUID transition: URL updated after turn 1 fired as 'new'.
+    // convMap still holds the 'new' entry from this session — this is the same conversation.
+    const isNewToUuidTransition = !brain && convId !== 'new' && !lockedBrainName && convMap.has('new');
+
+    if (!brain && isNewToUuidTransition) {
+      brain = convMap.get('new').brain;
+      convMap.delete('new');
+      lockConversation(convId, brain.name);
     }
 
     if (!brain) {
       routeResult = selectBrain(userText);
       if (!routeResult) return null;
       brain = routeResult.brain;
-      lockConversation(convId, brain.name);
+      // Only lock real conversation IDs — never 'new'
+      if (convId !== 'new') lockConversation(convId, brain.name);
     }
 
     // ── 2. Turn tracking ───────────────────────────────────────────────────
+    // isFirstTurn: no persisted lock + not seen in this session + not a 'new'→uuid continuation
+    const isFirstTurn = !lockedBrainName && !convMap.has(convId) && !isNewToUuidTransition;
+
     if (!convMap.has(convId)) {
       if (convMap.size >= CONV_MAP_MAX) {
         convMap.delete(convMap.keys().next().value);
       }
-      convMap.set(convId, { brain, turnCount: 0, refusalStreak: 0 });
+      convMap.set(convId, { brain, refusalStreak: 0 });
     }
     const entry = convMap.get(convId);
-    entry.turnCount++;
 
     // ── 3. Build injection content ─────────────────────────────────────────
     let injectionContent;
-    if (entry.turnCount === 1) {
-      injectionContent = brain.system_prompt;
+    if (isFirstTurn) {
+      const mem = state.brainMemory?.[brain.name];
+      const memBlock = mem?.facts?.length
+        ? `\n\n[Synapse Memory]\n${mem.facts.map((f) => `- ${f}`).join('\n')}`
+        : '';
+      injectionContent = brain.system_prompt + memBlock;
     } else {
       const fw = Array.isArray(brain.framework) ? brain.framework : [];
       injectionContent = `[Synapse Reminder] ${fw.join(' → ')}`;
@@ -183,8 +231,14 @@
       parsed.messages = [buildSystemMessage(injectionContent), ...filtered];
     }
 
+    const mem = isFirstTurn ? state.brainMemory?.[brain.name] : null;
     console.groupCollapsed('%c[Synapse] Outgoing prompt', 'color:#00ff88;font-weight:bold');
     console.log('%cInjected system content:', 'color:#00ff88', injectionContent);
+    if (mem?.facts?.length) {
+      console.log('%cMemory (%d fact%s):', 'color:#ffaa00;font-weight:bold', mem.facts.length, mem.facts.length === 1 ? '' : 's', mem.facts);
+    } else if (isFirstTurn) {
+      console.log('%cMemory:', 'color:#555', '(none)');
+    }
     console.log('%cUser message:', 'color:#aaaaff', userText);
     console.groupEnd();
 
@@ -219,7 +273,7 @@
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let fullText = '';
+    const fullChunks = []; // array join avoids O(n²) string allocation
     let finished = false;
 
     function processBlock(block) {
@@ -230,7 +284,7 @@
         const data = line.slice(6).trim();
         if (data === '[DONE]') {
           finished = true;
-          onDone(fullText);
+          onDone(fullChunks.join(''));
           return;
         }
         try {
@@ -249,7 +303,7 @@
             delta = parsed.v;
           }
           if (typeof delta === 'string' && delta.length > 0) {
-            fullText += delta;
+            fullChunks.push(delta);
             onText(delta);
           }
         } catch (_) { /* non-JSON line, skip */ }
@@ -272,13 +326,13 @@
 
         if (streamDone) {
           if (buffer.trim()) processBlock(buffer);
-          if (!finished) onDone(fullText);
+          if (!finished) onDone(fullChunks.join(''));
           return;
         }
 
         pump();
       }).catch(() => {
-        if (!finished) onDone(fullText);
+        if (!finished) onDone(fullChunks.join(''));
       });
     }
 
@@ -314,33 +368,35 @@
   }
 
   // ── Fetch intercept ────────────────────────────────────────────────────────
-  async function resolveArgs(input, init) {
-    if (input instanceof Request) {
-      return {
-        url: input.url,
-        method: input.method.toUpperCase(),
-        bodyText: await input.clone().text().catch(() => null),
-        isRequest: true,
-      };
-    }
-    return {
-      url: typeof input === 'string' ? input : String(input),
-      method: (init?.method ?? 'GET').toUpperCase(),
-      bodyText: typeof init?.body === 'string' ? init.body : null,
-      isRequest: false,
-    };
-  }
+  // Only the conversation endpoint needs inspection. Everything else — analytics,
+  // telemetry, CDN assets, model metadata — passes through with zero overhead.
+  const _CONV_URL = /\/backend-api\/conversation/;
 
   const _fetch = window.fetch.bind(window);
 
   window.fetch = async function synapseInterceptor(input, init = {}) {
-    const { url, method, bodyText, isRequest } = await resolveArgs(input, init);
+    // ── Fast path: skip immediately if disabled or wrong URL/method ──────────
+    const url    = input instanceof Request ? input.url    : String(input);
+    const method = (input instanceof Request ? input.method : (init?.method ?? 'GET')).toUpperCase();
+
+    if (!state.enabled || method !== 'POST' || !_CONV_URL.test(url)) {
+      return _fetch(input, init);
+    }
+
+    // ── Read body only for conversation requests ──────────────────────────────
+    let bodyText = null;
+    const isRequest = input instanceof Request;
+    if (isRequest) {
+      bodyText = await input.clone().text().catch(() => null);
+    } else if (typeof init?.body === 'string') {
+      bodyText = init.body;
+    }
 
     let injectedBrain = null;
     let modifiedInput = input;
-    let modifiedInit = init;
+    let modifiedInit  = init;
 
-    if (state.enabled && method === 'POST' && bodyText) {
+    if (bodyText) {
       try {
         const parsed = JSON.parse(bodyText);
         const result = tryInjectBrain(parsed);
