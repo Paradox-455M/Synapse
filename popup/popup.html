@@ -75,6 +75,17 @@
         </div>
       </section>
 
+      <!-- Brain Memory editor -->
+      <section class="section" id="memorySection" style="display:none">
+        <div class="section-label">MEMORY <span class="memory-brain-name" id="memoryBrainName"></span></div>
+        <div class="memory-hint">One fact per line. Injected at the start of every new conversation.</div>
+        <textarea class="memory-textarea" id="memoryTextarea" rows="4" placeholder="Building in Go 1.25&#10;Uses pgx/v5 for Postgres&#10;Prefers stateless auth"></textarea>
+        <div class="memory-actions">
+          <button class="memory-save-btn" id="memorySave">Save Memory</button>
+          <span class="memory-toast" id="memoryToast" style="display:none">Saved</span>
+        </div>
+      </section>
+
       <!-- Brain Packs (built-in + custom merged) -->
       <section class="section">
         <div class="section-label-row">

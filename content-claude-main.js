@@ -15,6 +15,7 @@
     customBrains: [],
     mode: 'auto',
     conversationLocks: {},
+    brainMemory: {},
   };
 
   function allBrains() {
@@ -78,6 +79,30 @@
     window.postMessage({ type: '__SYNAPSE_LOCK_CONV__', payload: { convId, brainName } }, '*');
   }
 
+  // convId → string[] — user messages sent this session, for memory prompts
+  const sessionMessages = new Map();
+
+  // ── Nav-away: fire memory prompt when user leaves a conversation ──────────
+  let _lastNavConvId = getConvId();
+  setInterval(() => {
+    const current = getConvId();
+    if (current === _lastNavConvId) return;
+    const prev = _lastNavConvId;
+    _lastNavConvId = current;
+    // Claude's fallback convId is the full pathname — skip those
+    if (prev.startsWith('/')) return;
+    const prevBrain = allBrains().find(
+      (b) => b.name === state.conversationLocks?.[prev]
+    );
+    if (!prevBrain) return;
+    const prevMsgs = sessionMessages.get(prev) ?? [];
+    if (!prevMsgs.length) return;
+    window.postMessage({
+      type: '__SYNAPSE_NAV_AWAY__',
+      payload: { brainName: prevBrain.name, messages: prevMsgs },
+    }, '*');
+  }, 1000);
+
   // ── Extract user text from Claude request body ────────────────────────────
   // Claude uses various body shapes; try common prompt fields.
   function extractUserText(parsed) {
@@ -132,6 +157,15 @@
     if (!userText) return null;
 
     const convId = getConvId();
+
+    // Accumulate for memory prompt on nav-away
+    if (userText) {
+      const msgs = sessionMessages.get(convId) ?? [];
+      if (!msgs.includes(userText)) {
+        msgs.push(userText);
+        sessionMessages.set(convId, msgs);
+      }
+    }
     const brains = allBrains();
 
     // Resolve brain (conv lock takes priority)
@@ -158,7 +192,11 @@
     const fw = Array.isArray(brain.framework) ? brain.framework : [];
     let prefix;
     if (isFirstTurn) {
-      prefix = `[Context: You are operating as ${brain.name}. ${brain.system_prompt}]\n\n`;
+      const mem = state.brainMemory?.[brain.name];
+      const memBlock = mem?.facts?.length
+        ? `\n\n[Synapse Memory]\n${mem.facts.map((f) => `- ${f}`).join('\n')}`
+        : '';
+      prefix = `[Context: You are operating as ${brain.name}. ${brain.system_prompt}${memBlock}]\n\n`;
     } else {
       prefix = `[Synapse Reminder: ${fw.join(' → ')}]\n\n`;
     }
@@ -189,8 +227,14 @@
     // Scrub prefix from rendered bubble — Claude reflects server content back into the DOM
     scrubRenderedMessage(prefix);
 
+    const mem = isFirstTurn ? state.brainMemory?.[brain.name] : null;
     console.groupCollapsed('%c[Synapse:Claude] Outgoing prompt', 'color:#7c6fff;font-weight:bold');
     console.log('%cInjected prefix:', 'color:#7c6fff', prefix);
+    if (mem?.facts?.length) {
+      console.log('%cMemory (%d fact%s):', 'color:#ffaa00;font-weight:bold', mem.facts.length, mem.facts.length === 1 ? '' : 's', mem.facts);
+    } else if (isFirstTurn) {
+      console.log('%cMemory:', 'color:#555', '(none)');
+    }
     console.log('%cUser message:', 'color:#aaaaff', userText);
     console.groupEnd();
 

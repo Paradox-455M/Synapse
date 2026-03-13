@@ -110,16 +110,19 @@ async function initStorage() {
     } catch (_) {}
   }
 
+  const existingMemory = await chrome.storage.local.get(['synapse_brain_memory']);
+
   await chrome.storage.local.set({
     brains,
-    activeBrain:        existing.activeBrain        ?? (brains[0]?.name ?? null),
-    enabled:            existing.enabled            ?? true,
-    mode:               existing.mode               ?? 'auto',
+    activeBrain:          existing.activeBrain        ?? (brains[0]?.name ?? null),
+    enabled:              existing.enabled            ?? true,
+    mode:                 existing.mode               ?? 'auto',
     customBrains,
-    conversationLocks:  existing.conversationLocks  ?? {},
-    lastActivation:     existing.lastActivation     ?? null,
-    refusalWarning:     existing.refusalWarning      ?? null,
-    synapse_analytics:  existing.synapse_analytics   ?? { brains: {}, totalActivations: 0, lastReset: new Date().toISOString() },
+    conversationLocks:    existing.conversationLocks  ?? {},
+    lastActivation:       existing.lastActivation     ?? null,
+    refusalWarning:       existing.refusalWarning      ?? null,
+    synapse_analytics:    existing.synapse_analytics   ?? { brains: {}, totalActivations: 0, lastReset: new Date().toISOString() },
+    synapse_brain_memory: existingMemory.synapse_brain_memory ?? {},
   });
 
   // Mirror settings + customBrains to sync (for cross-device)
@@ -148,24 +151,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.storage.local.get([
       'brains', 'customBrains', 'activeBrain', 'enabled',
       'mode', 'lastActivation', 'conversationLocks', 'refusalWarning',
-      'synapse_analytics',
-    ], sendResponse);
+      'synapse_analytics', 'synapse_brain_memory',
+    ], (r) => sendResponse({ ...r, brainMemory: r.synapse_brain_memory ?? {} }));
     return true;
   }
 
+  if (msg.type === 'SAVE_BRAIN_MEMORY') {
+    const { brainName, facts } = msg;
+    // H3: validate inputs before writing to storage
+    if (typeof brainName !== 'string' || !brainName || brainName.length > 200) return;
+    if (!Array.isArray(facts)) return;
+    const sanitizedFacts = facts
+      .filter((f) => typeof f === 'string')
+      .map((f) => f.trim().slice(0, 500))
+      .filter(Boolean)
+      .slice(0, 100);
+    chrome.storage.local.get(['synapse_brain_memory'], (r) => {
+      const memory = r.synapse_brain_memory ?? {};
+      memory[brainName] = { facts: sanitizedFacts, updatedAt: Date.now() };
+      chrome.storage.local.set({ synapse_brain_memory: memory });
+    });
+    return;
+  }
+
   if (msg.type === 'SET_STATE') {
-    chrome.storage.local.set(msg.payload, async () => {
+    // C1: content scripts (sender.tab present) are restricted to safe settings keys only.
+    // Popup messages (no sender.tab) are trusted for the full key set.
+    const isContentScript = !!sender?.tab;
+    const CONTENT_SCRIPT_ALLOWED = new Set(['activeBrain', 'enabled', 'mode']);
+
+    const safe = {};
+    for (const [k, v] of Object.entries(msg.payload ?? {})) {
+      if (!isContentScript || CONTENT_SCRIPT_ALLOWED.has(k)) safe[k] = v;
+    }
+    if (!Object.keys(safe).length) return true;
+
+    chrome.storage.local.set(safe, async () => {
       // Mirror settings-tier keys to sync storage
       const syncPayload = {};
       for (const key of ['activeBrain', 'enabled', 'mode']) {
-        if (key in msg.payload) syncPayload[key] = msg.payload[key];
+        if (key in safe) syncPayload[key] = safe[key];
       }
       if (Object.keys(syncPayload).length) {
         chrome.storage.sync.set(syncPayload).catch(() => {});
       }
       // Mirror customBrains to sync if updated
-      if ('customBrains' in msg.payload) {
-        saveCustomBrainsToSync(msg.payload.customBrains).catch(() => {});
+      if ('customBrains' in safe) {
+        saveCustomBrainsToSync(safe.customBrains).catch(() => {});
       }
       sendResponse({ ok: true });
     });
@@ -221,6 +253,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CSP_FALLBACK_NEEDED') {
     const tabId = sender?.tab?.id;
     if (!tabId) return;
+    // M3: validate sender URL before executing script
+    if (!/^https:\/\/chatgpt\.com\//.test(sender.url ?? '')) return;
     chrome.scripting.executeScript({
       target: { tabId },
       files: ['content-main.js'],
@@ -235,6 +269,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CSP_FALLBACK_NEEDED_CLAUDE') {
     const tabId = sender?.tab?.id;
     if (!tabId) return;
+    // M3: validate sender URL before executing script
+    if (!/^https:\/\/claude\.ai\//.test(sender.url ?? '')) return;
     chrome.scripting.executeScript({
       target: { tabId },
       files: ['content-claude-main.js'],

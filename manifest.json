@@ -21,17 +21,17 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["content-isolated.js"],
+      "js": ["content-memory-prompt.js", "content-isolated.js"],
       "run_at": "document_start"
     },
     {
       "matches": ["https://claude.ai/*"],
-      "js": ["content-claude-isolated.js"],
+      "js": ["content-memory-prompt.js", "content-claude-isolated.js"],
       "run_at": "document_start"
     },
     {
       "matches": ["https://gemini.google.com/*"],
-      "js": ["content-gemini.js"],
+      "js": ["content-memory-prompt.js", "content-gemini.js"],
       "run_at": "document_idle"
     }
   ],
@@ -41,7 +41,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["brains/*.json", "content-main.js"],
+      "resources": ["content-main.js"],
       "matches": ["https://chatgpt.com/*"]
     },
     {
