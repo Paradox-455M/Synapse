@@ -26,6 +26,11 @@ const importBtn             = document.getElementById('importBtn');
 const exportBtn             = document.getElementById('exportBtn');
 const brainFileInput        = document.getElementById('brainFileInput');
 const importError           = document.getElementById('importError');
+const copyLinkBtn           = document.getElementById('copyLinkBtn');
+const pasteLinkBtn          = document.getElementById('pasteLinkBtn');
+const pasteLinkRow          = document.getElementById('pasteLinkRow');
+const pasteLinkInput        = document.getElementById('pasteLinkInput');
+const pasteLinkImport       = document.getElementById('pasteLinkImport');
 const refusalBanner         = document.getElementById('refusalBanner');
 const refusalText           = document.getElementById('refusalText');
 const refusalDismiss        = document.getElementById('refusalDismiss');
@@ -44,6 +49,8 @@ const studioAddStep         = document.getElementById('studioAddStep');
 const studioError           = document.getElementById('studioError');
 const studioSave            = document.getElementById('studioSave');
 const studioTest            = document.getElementById('studioTest');
+const studioTestPrompt      = document.getElementById('studioTestPrompt');
+const studioTestResult      = document.getElementById('studioTestResult');
 const studioToast           = document.getElementById('studioToast');
 
 // ── DOM refs — MEMORY section ──────────────────────────────────────────────
@@ -60,10 +67,15 @@ const analyticsReset        = document.getElementById('analyticsReset');
 const analyticsResetConfirm = document.getElementById('analyticsResetConfirm');
 const analyticsResetYes     = document.getElementById('analyticsResetYes');
 
+// ── DOM refs — onboarding ──────────────────────────────────────────────────
+const onboardingOverlay = document.getElementById('onboardingOverlay');
+const brainSearch       = document.getElementById('brainSearch');
+
 // ── Module state ───────────────────────────────────────────────────────────
 let currentState = {};
 let currentConvId = null;
 let _editingBrainName = null; // null = new brain, string = editing existing
+let _brainSearchQuery = '';   // live filter for the brain list
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function escHtml(str) {
@@ -203,11 +215,19 @@ function render(state) {
     memorySection.style.display = 'none';
   }
 
-  // Merged brain list
+  // Merged brain list — filtered by search query if active
   const allBrains = [
     ...brains.map((b) => ({ ...b, _builtin: true })),
     ...customBrains.map((b) => ({ ...b, _custom: true })),
   ];
+
+  const q = _brainSearchQuery;
+  const displayed = q
+    ? allBrains.filter((b) =>
+        b.name.toLowerCase().includes(q) ||
+        (b.tags ?? []).some((t) => t.toLowerCase().includes(q))
+      )
+    : allBrains;
 
   brainList.innerHTML = '';
 
@@ -217,8 +237,14 @@ function render(state) {
     li.style.cursor = 'default';
     li.innerHTML = '<span style="color:var(--text-dim);font-size:11px">No brains loaded</span>';
     brainList.appendChild(li);
+  } else if (!displayed.length) {
+    const li = document.createElement('li');
+    li.className = 'brain-item';
+    li.style.cursor = 'default';
+    li.innerHTML = `<span style="color:var(--text-dim);font-size:11px">No brains match "<em>${escHtml(q)}</em>"</span>`;
+    brainList.appendChild(li);
   } else {
-    for (const b of allBrains) {
+    for (const b of displayed) {
       brainList.appendChild(buildBrainItem(b, activeBrain, mode));
     }
   }
@@ -386,6 +412,83 @@ exportBtn.addEventListener('click', () => {
   a.download = `${name.replace(/\s+/g, '-').toLowerCase()}.json`;
   a.click();
   URL.revokeObjectURL(url);
+});
+
+// ── Brain link share ──────────────────────────────────────────────────────
+function encodeBrainLink(brain) {
+  try {
+    const data = {
+      name: brain.name,
+      tags: brain.tags ?? [],
+      system_prompt: brain.system_prompt ?? '',
+      framework: brain.framework ?? [],
+    };
+    return 'synapse:v1:' + btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+  } catch (_) { return null; }
+}
+
+function decodeBrainLink(str) {
+  if (typeof str !== 'string' || !str.startsWith('synapse:v1:')) return null;
+  try {
+    const data = JSON.parse(decodeURIComponent(escape(atob(str.slice('synapse:v1:'.length).trim()))));
+    if (!data || !data.name || !data.system_prompt) return null;
+    return {
+      name: String(data.name),
+      tags: Array.isArray(data.tags) ? data.tags.filter((t) => typeof t === 'string') : [],
+      system_prompt: String(data.system_prompt),
+      framework: Array.isArray(data.framework) ? data.framework.filter((f) => typeof f === 'string') : [],
+    };
+  } catch (_) { return null; }
+}
+
+copyLinkBtn.addEventListener('click', () => {
+  const name = currentState.activeBrain;
+  if (!name) { showImportError('Select a brain first.'); return; }
+  const all = [...(currentState.brains ?? []), ...(currentState.customBrains ?? [])];
+  const brain = all.find((b) => b.name === name);
+  if (!brain) { showImportError('Brain not found.'); return; }
+  const link = encodeBrainLink(brain);
+  if (!link) { showImportError('Could not encode brain.'); return; }
+  navigator.clipboard.writeText(link).then(() => {
+    importError.style.display = 'none';
+    copyLinkBtn.textContent = '✓ Copied!';
+    setTimeout(() => { copyLinkBtn.textContent = '⊙ Copy Link'; }, 2000);
+  }).catch(() => {
+    showImportError('Copy failed — link: ' + link.slice(0, 50) + '…');
+  });
+});
+
+pasteLinkBtn.addEventListener('click', () => {
+  const isVisible = pasteLinkRow.style.display !== 'none';
+  pasteLinkRow.style.display = isVisible ? 'none' : '';
+  importError.style.display = 'none';
+  if (!isVisible) {
+    pasteLinkInput.value = '';
+    pasteLinkInput.focus();
+  }
+});
+
+pasteLinkImport.addEventListener('click', () => {
+  const raw = pasteLinkInput.value.trim();
+  if (!raw) { showImportError('Paste a synapse:v1: link first.'); return; }
+  const brain = decodeBrainLink(raw);
+  if (!brain) { showImportError('Invalid link format.'); return; }
+  const errors = validateBrain(brain);
+  if (errors.length) { showImportError('Validation failed: ' + errors.join(' · ')); return; }
+  const current = currentState.customBrains ?? [];
+  if (current.length >= MAX_CUSTOM_BRAINS) {
+    showImportError(`Custom brain limit reached (${MAX_CUSTOM_BRAINS}/${MAX_CUSTOM_BRAINS}). Delete one first.`);
+    return;
+  }
+  const allNames = [...(currentState.brains ?? []), ...current].map((b) => b.name.toLowerCase());
+  if (allNames.includes(brain.name.toLowerCase())) {
+    showImportError(`A brain named "${brain.name}" already exists.`);
+    return;
+  }
+  chrome.runtime.sendMessage(
+    { type: 'SET_STATE', payload: { customBrains: [...current, brain] } },
+    () => { pasteLinkRow.style.display = 'none'; pasteLinkInput.value = ''; loadState(); }
+  );
 });
 
 // ── Conversation unlock ───────────────────────────────────────────────────
@@ -586,16 +689,59 @@ studioSave.addEventListener('click', () => {
 });
 
 studioTest.addEventListener('click', () => {
-  const text = studioSystemPrompt.value.trim();
-  if (!text) {
-    showStudioToast('System prompt is empty.');
+  const prompt = studioTestPrompt.value.trim();
+  if (!prompt) {
+    showStudioToast('Enter a test prompt first.');
     return;
   }
-  navigator.clipboard.writeText(text).then(() => {
-    showStudioToast('System prompt copied to clipboard.');
-  }).catch(() => {
-    showStudioToast('Clipboard access denied.');
-  });
+
+  // Build a candidate brain from the current form values (may be incomplete)
+  const formName = studioName.value.trim() || '(this brain)';
+  const formTags = studioTags.value.split(',').map((t) => t.trim()).filter(Boolean);
+  const formPrompt = studioSystemPrompt.value.trim();
+  const formBrain = formTags.length && formPrompt
+    ? { name: formName, tags: formTags, system_prompt: formPrompt, framework: getFrameworkSteps() }
+    : null;
+
+  // All saved brains, replacing any with the same name, then appending the form brain
+  const saved = [
+    ...(currentState.brains ?? []),
+    ...(currentState.customBrains ?? []),
+  ].filter((b) => b.name !== formName);
+  const candidates = formBrain ? [...saved, formBrain] : saved;
+
+  if (!candidates.length) {
+    showStudioToast('No brains loaded yet.');
+    return;
+  }
+
+  const tokens = _ppTokenize(prompt);
+  const idf = _ppBuildIdf(candidates);
+  const scored = candidates
+    .map((b) => ({ brain: b, score: _ppScoreOne(b, tokens, idf, prompt) }))
+    .filter((e) => e.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  studioTestResult.style.display = '';
+  if (!scored.length) {
+    studioTestResult.innerHTML =
+      '<span class="test-no-match">No brain matched — would fall back to active brain</span>';
+    return;
+  }
+
+  const winner = scored[0];
+  const isForm = formBrain && winner.brain.name === formName;
+  const label = isForm ? '<em>(this brain)</em>' : escHtml(winner.brain.name);
+  const matched = _ppMatchedTags(winner.brain, tokens, prompt);
+  const tagsStr = matched.length ? escHtml(matched.slice(0, 6).join(', ')) : 'no tag match';
+  const runner = scored[1]
+    ? ` · 2nd: ${escHtml(scored[1].brain.name)} (${scored[1].score.toFixed(2)})`
+    : '';
+
+  studioTestResult.innerHTML =
+    `<span class="test-winner">→ ${label}</span>` +
+    `<span class="test-score"> wins · score: ${winner.score.toFixed(3)}</span><br>` +
+    `<span class="test-tags">matched: ${tagsStr}${runner}</span>`;
 });
 
 // ── Analytics ─────────────────────────────────────────────────────────────
@@ -665,6 +811,136 @@ analyticsResetYes.addEventListener('click', () => {
   );
 });
 
+// ── Brain search ──────────────────────────────────────────────────────────
+brainSearch.addEventListener('input', () => {
+  _brainSearchQuery = brainSearch.value.toLowerCase().trim();
+  render(currentState);
+});
+
+// ── Onboarding ────────────────────────────────────────────────────────────
+function checkOnboarding() {
+  chrome.storage.local.get(['onboarded'], ({ onboarded }) => {
+    if (!onboarded) onboardingOverlay.style.display = '';
+  });
+}
+
+document.getElementById('onboardingCta').addEventListener('click', () => {
+  chrome.storage.local.set({ onboarded: true }, () => {
+    onboardingOverlay.style.display = 'none';
+  });
+});
+
+// ── Footer links ──────────────────────────────────────────────────────────
+document.getElementById('feedbackLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.tabs.create({ url: 'https://github.com/rahulsharmaah/Synapse/issues' });
+});
+
+document.getElementById('privacyLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.tabs.create({ url: chrome.runtime.getURL('popup/privacy.html') });
+});
+
+// ── Routing utilities (inlined — popup can't import ES modules) ────────────
+const _PP_STOPWORDS = new Set([
+  'the', 'and', 'for', 'are', 'was', 'with', 'this', 'that',
+  'have', 'from', 'they', 'will', 'what', 'how', 'why', 'can',
+  'you', 'your', 'my', 'me', 'it', 'its', 'use', 'used', 'using',
+]);
+
+function _ppTokenize(text) {
+  if (typeof text !== 'string' || !text.trim()) return [];
+  try {
+    const raw = text.toLowerCase().split(/[\s,.()\[\]{}"'`]+/)
+      .filter((t) => t.length >= 3 && !_PP_STOPWORDS.has(t));
+    return [...new Set(raw)];
+  } catch (_) { return []; }
+}
+
+function _ppBuildIdf(brains) {
+  if (!Array.isArray(brains) || !brains.length) return {};
+  const N = brains.length, df = {};
+  for (const brain of brains) {
+    if (!brain || typeof brain !== 'object') continue;
+    if (Array.isArray(brain.tags)) {
+      const seen = new Set();
+      for (const tag of brain.tags) {
+        const t = typeof tag === 'string' ? tag.trim().toLowerCase() : '';
+        if (!t || seen.has(t)) continue;
+        df[t] = (df[t] ?? 0) + 1; seen.add(t);
+      }
+    }
+    const spText = typeof brain.system_prompt === 'string' ? brain.system_prompt.slice(0, 200) : '';
+    if (spText) {
+      const seenSp = new Set();
+      for (const tok of _ppTokenize(spText)) {
+        const key = '_sp:' + tok;
+        if (seenSp.has(key)) continue;
+        df[key] = (df[key] ?? 0) + 1; seenSp.add(key);
+      }
+    }
+  }
+  const idf = {};
+  for (const [tag, count] of Object.entries(df)) {
+    const v = Math.log((N + 1) / (count + 1));
+    idf[tag] = Number.isFinite(v) ? Math.max(0, v) : 0;
+  }
+  return idf;
+}
+
+function _ppScoreOne(brain, tokens, idf, raw) {
+  if (!brain || !Array.isArray(brain.tags) || !brain.tags.length || !tokens.length) return 0;
+  const rawLow = typeof raw === 'string' ? raw.toLowerCase() : '';
+  let score = 0;
+  for (const tag of brain.tags) {
+    const t = typeof tag === 'string' ? tag.trim().toLowerCase() : '';
+    if (!t) continue;
+    try {
+      let hit = false, mult = 1.0;
+      if (t.indexOf(' ') >= 0) {
+        if (rawLow && rawLow.includes(t)) { hit = true; mult = 1.5; }
+      } else if (t.length < 5) {
+        if (rawLow) {
+          const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          hit = new RegExp('\\b' + esc + '\\b').test(rawLow);
+        }
+      } else {
+        hit = tokens.some((tok) => typeof tok === 'string' && tok && (t.includes(tok) || tok.includes(t)));
+      }
+      if (hit) score += (Number.isFinite(idf[t]) ? idf[t] : 1.0) * mult;
+    } catch (_) {}
+  }
+  const spText = typeof brain.system_prompt === 'string' ? brain.system_prompt.slice(0, 200) : '';
+  if (spText) {
+    const seen = new Set();
+    for (const st of _ppTokenize(spText)) {
+      if (seen.has(st)) continue; seen.add(st);
+      if (tokens.some((tok) => typeof tok === 'string' && tok && (st.includes(tok) || tok.includes(st)))) {
+        score += (Number.isFinite(idf['_sp:' + st]) ? idf['_sp:' + st] : 1.0) * 0.4;
+      }
+    }
+  }
+  return (score / Math.log2(tokens.length + 2)) || 0;
+}
+
+function _ppMatchedTags(brain, tokens, raw) {
+  if (!brain || !Array.isArray(brain.tags)) return [];
+  const rawLow = typeof raw === 'string' ? raw.toLowerCase() : '';
+  return brain.tags.filter((tag) => {
+    const t = typeof tag === 'string' ? tag.trim().toLowerCase() : '';
+    if (!t) return false;
+    if (t.indexOf(' ') >= 0) return rawLow ? rawLow.includes(t) : false;
+    if (t.length < 5) {
+      if (!rawLow) return false;
+      try {
+        const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp('\\b' + esc + '\\b').test(rawLow);
+      } catch (_) { return false; }
+    }
+    return tokens.some((tok) => typeof tok === 'string' && tok && (t.includes(tok) || tok.includes(t)));
+  });
+}
+
 // ── Load ──────────────────────────────────────────────────────────────────
 function loadState() {
   chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
@@ -678,6 +954,9 @@ function loadState() {
 
 // Clear refusal badge when popup opens
 chrome.action.setBadgeText({ text: '' });
+
+// Check onboarding first, then load state
+checkOnboarding();
 
 // Get current tab conversation ID (supports chatgpt.com)
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
