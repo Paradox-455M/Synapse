@@ -9,6 +9,49 @@
 <body>
   <div class="container">
 
+    <!-- Onboarding overlay (shown on first install) -->
+    <div id="onboardingOverlay" class="onboarding-overlay" style="display:none">
+      <div class="onboarding-body">
+
+        <div class="onboarding-logo">
+          <span class="logo-mark">◈</span>
+          <span class="logo-text">SYNAPSE</span>
+        </div>
+        <p class="onboarding-tagline">
+          Inject specialist AI personas into ChatGPT, Claude, and Gemini —
+          so every prompt gets the right expert behind it.
+        </p>
+
+        <div class="onboarding-items">
+          <div class="onboarding-item">
+            <span class="onboarding-item-icon">⬡</span>
+            <div class="onboarding-item-text">
+              <div class="onboarding-item-title">Brain Packs</div>
+              <div class="onboarding-item-body">15 built-in specialist personas — API Designer, Security Researcher, Data Scientist, and more. Each has a system prompt and routing keywords.</div>
+            </div>
+          </div>
+          <div class="onboarding-item">
+            <span class="onboarding-item-icon">◎</span>
+            <div class="onboarding-item-text">
+              <div class="onboarding-item-title">Auto Routing</div>
+              <div class="onboarding-item-body">In auto mode, Synapse reads your message keywords and activates the best-matching brain before the request reaches the AI.</div>
+            </div>
+          </div>
+          <div class="onboarding-item">
+            <span class="onboarding-item-icon">▣</span>
+            <div class="onboarding-item-text">
+              <div class="onboarding-item-title">Memory</div>
+              <div class="onboarding-item-body">Store facts per brain — tech stack, preferences, project context. Injected automatically at the start of every new conversation.</div>
+            </div>
+          </div>
+        </div>
+
+        <button class="onboarding-cta" id="onboardingCta">Get Started →</button>
+        <div class="onboarding-sub">ChatGPT · Claude · Gemini · Perplexity · No account required</div>
+
+      </div>
+    </div>
+
     <!-- Header (global) -->
     <header class="header">
       <div class="logo">
@@ -92,12 +135,22 @@
           <span class="section-label">BRAIN PACKS</span>
           <span class="custom-count" id="customCount"></span>
         </div>
+        <input class="brain-search" id="brainSearch" type="text" placeholder="Search brains…" autocomplete="off" />
         <ul class="brain-list" id="brainList"></ul>
 
         <!-- Import / Export row -->
         <div class="import-row">
           <button class="import-btn" id="importBtn">⊕ Import Brain</button>
           <button class="export-btn" id="exportBtn">↓ Export Active</button>
+        </div>
+        <!-- Link share row -->
+        <div class="import-row">
+          <button class="import-btn" id="copyLinkBtn">⊙ Copy Link</button>
+          <button class="import-btn" id="pasteLinkBtn">⊕ Paste Link</button>
+        </div>
+        <div class="paste-link-row" id="pasteLinkRow" style="display:none">
+          <input class="brain-search" id="pasteLinkInput" type="text" placeholder="Paste synapse:v1:… link here" autocomplete="off" />
+          <button class="memory-save-btn" id="pasteLinkImport" style="margin-top:6px;width:100%">Import from Link</button>
         </div>
         <div class="import-error" id="importError" style="display:none"></div>
         <input type="file" id="brainFileInput" accept=".json" style="display:none" />
@@ -106,6 +159,14 @@
       <!-- Footer -->
       <footer class="footer">
         <span class="hint" id="footerHint">Auto-router active · keywords trigger brains</span>
+        <div class="footer-meta">
+          <span class="version-tag">v1.0.0</span>
+          <div class="footer-links">
+            <a class="feedback-link" id="privacyLink" href="#">Privacy</a>
+            <span class="footer-sep">·</span>
+            <a class="feedback-link" id="feedbackLink" href="#">Report a bug →</a>
+          </div>
+        </div>
       </footer>
 
     </div><!-- /tab-brains -->
@@ -143,11 +204,15 @@
 
           <div class="studio-error" id="studioError" style="display:none"></div>
 
+          <label class="studio-label">Test Routing <span class="studio-hint">(type a prompt, see which brain wins)</span></label>
+          <input class="studio-input" id="studioTestPrompt" type="text" placeholder="e.g. help me design a REST API for user auth" />
+
           <div class="studio-actions">
             <button class="studio-save-btn" id="studioSave">Save Brain</button>
-            <button class="studio-test-btn" id="studioTest" title="Copy system_prompt to clipboard">Test Brain</button>
+            <button class="studio-test-btn" id="studioTest" title="Route this prompt through all brains">Test</button>
           </div>
           <div class="studio-toast" id="studioToast" style="display:none"></div>
+          <div class="studio-test-result" id="studioTestResult" style="display:none"></div>
 
         </div>
       </section>

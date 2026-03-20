@@ -99,19 +99,37 @@ function buildIdfMap(brains) {
   if (!Array.isArray(brains) || !brains.length) return {};
 
   const N = brains.length;
-  const df = {}; // tag → count of brains containing it
+  const df = {}; // tag/token → count of brains containing it
 
   for (const brain of brains) {
     if (!brain || typeof brain !== 'object') continue;
-    if (!Array.isArray(brain.tags)) continue;
 
-    const seen = new Set();
-    for (const tag of brain.tags) {
-      const t = _str(tag);
-      if (!t) continue; // skip null, undefined, empty, non-string tags
-      if (!seen.has(t)) {
-        df[t] = (df[t] ?? 0) + 1;
-        seen.add(t);
+    // Index tags
+    if (Array.isArray(brain.tags)) {
+      const seen = new Set();
+      for (const tag of brain.tags) {
+        const t = _str(tag);
+        if (!t) continue;
+        if (!seen.has(t)) {
+          df[t] = (df[t] ?? 0) + 1;
+          seen.add(t);
+        }
+      }
+    }
+
+    // Index system_prompt first 200 chars — keyed as '_sp:<token>' for 0.4× scoring
+    const spText = typeof brain.system_prompt === 'string'
+      ? brain.system_prompt.slice(0, 200)
+      : '';
+    if (spText) {
+      const spTokens = tokenizePrompt(spText);
+      const seenSp = new Set();
+      for (const tok of spTokens) {
+        const key = '_sp:' + tok;
+        if (!seenSp.has(key)) {
+          df[key] = (df[key] ?? 0) + 1;
+          seenSp.add(key);
+        }
       }
     }
   }
@@ -131,43 +149,88 @@ function buildIdfMap(brains) {
 /**
  * Score a single brain against a tokenized prompt using IDF-weighted tag matching.
  *
- * Partial matching: a tag fires if any token includes the tag as a substring
- * OR the tag includes the token as a substring.
- * Catches "kubernetes" matching "kube", "architecture" matching "architect".
+ * Matching rules by tag type:
+ * - Multi-word phrase (tag contains space): exact phrase match in rawText → 1.5× IDF bonus
+ * - Short tag (length < 5): whole-word boundary match only (prevents "sql" matching "sequential")
+ * - Long tag (≥ 5 chars, single word): partial substring match on tokens
+ *   (catches "kubernetes" matching "kube", "architecture" matching "architect")
+ *
+ * Also scores system_prompt tokens (first 200 chars, keyed as _sp: in idfMap) at 0.4× weight.
+ * Final score is length-normalised by dividing by log2(tokenCount + 2).
  *
  * Never throws. Returns 0 for any malformed input.
  *
  * @param {*} brain - Brain pack to score
  * @param {*} tokens - Tokenized prompt (from tokenizePrompt)
  * @param {*} idfMap - IDF weights (from buildIdfMap)
+ * @param {*} [rawText] - Original prompt string for phrase/boundary matching
  * @returns {number} Total score (>= 0); higher = stronger match
  */
-function scoreBrain(brain, tokens, idfMap) {
+function scoreBrain(brain, tokens, idfMap, rawText) {
   if (!brain || typeof brain !== 'object') return 0;
   if (!Array.isArray(brain.tags) || !brain.tags.length) return 0;
   if (!Array.isArray(tokens) || !tokens.length) return 0;
 
   const map = (idfMap !== null && typeof idfMap === 'object') ? idfMap : {};
+  const raw = typeof rawText === 'string' ? rawText.toLowerCase() : '';
 
   let score = 0;
   for (const tag of brain.tags) {
     const t = _str(tag);
     if (!t) continue;
     try {
-      const hit = tokens.some((tok) => {
-        if (typeof tok !== 'string' || !tok) return false;
-        return t.includes(tok) || tok.includes(t);
-      });
+      let hit = false;
+      let mult = 1.0;
+
+      if (t.indexOf(' ') >= 0) {
+        // Multi-word phrase: exact phrase match in raw text → 1.5× bonus
+        if (raw && raw.includes(t)) { hit = true; mult = 1.5; }
+      } else if (t.length < 5) {
+        // Short tag: whole-word boundary match only
+        if (raw) {
+          const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          hit = new RegExp('\\b' + esc + '\\b').test(raw);
+        }
+      } else {
+        // Long tag: partial substring match on tokens
+        hit = tokens.some((tok) => {
+          if (typeof tok !== 'string' || !tok) return false;
+          return t.includes(tok) || tok.includes(t);
+        });
+      }
+
       if (hit) {
         const weight = _num(map[t], 1.0);
-        score += weight;
+        score += weight * mult;
       }
     } catch (_) {
       // Defensive: skip this tag if anything unexpected happens
     }
   }
 
-  return _num(score, 0);
+  // system_prompt bonus: SP tokens scored at 0.4× IDF weight
+  const spText = typeof brain.system_prompt === 'string'
+    ? brain.system_prompt.slice(0, 200)
+    : '';
+  if (spText) {
+    const spTokens = tokenizePrompt(spText);
+    const seenSp = new Set();
+    for (const spTok of spTokens) {
+      if (seenSp.has(spTok)) continue;
+      seenSp.add(spTok);
+      const spHit = tokens.some((tok) =>
+        typeof tok === 'string' && tok && (spTok.includes(tok) || tok.includes(spTok))
+      );
+      if (spHit) {
+        const key = '_sp:' + spTok;
+        const weight = _num(map[key], 1.0);
+        score += weight * 0.4;
+      }
+    }
+  }
+
+  // Length normalisation: divide by log2(tokenCount + 2)
+  return _num(score / Math.log2(tokens.length + 2), 0);
 }
 
 // ── 4. routeBrain ─────────────────────────────────────────────────────────────
@@ -191,7 +254,9 @@ function scoreBrain(brain, tokens, idfMap) {
  *
  * @param {*} prompt - Raw user prompt
  * @param {*} brains - Available brain packs
- * @param {*} [options] - { manualOverride?: string } — brain id or name to force
+ * @param {*} [options] - { manualOverride?: string, sessionTags?: string[] }
+ *   manualOverride: brain id or name to force
+ *   sessionTags: matched tags from previous turn(s); overlapping brains get a 30% score boost
  * @returns {RouterResult}
  */
 function routeBrain(prompt, brains, options) {
@@ -235,7 +300,7 @@ function routeBrain(prompt, brains, options) {
   const idfMap = buildIdfMap(allBrains);
 
   const scored = allBrains
-    .map((brain) => ({ brain, score: scoreBrain(brain, tokens, idfMap) }))
+    .map((brain) => ({ brain, score: scoreBrain(brain, tokens, idfMap, prompt) }))
     .filter((e) => Number.isFinite(e.score) && e.score > 0)
     .sort((a, b) => {
       const scoreDiff = b.score - a.score;
@@ -248,13 +313,39 @@ function routeBrain(prompt, brains, options) {
       return (a.brain.name ?? '').localeCompare(b.brain.name ?? '');
     });
 
+  // ── Session context bonus: prior-turn matched tags boost scores by 30% ────
+  const sessionTags = Array.isArray(opts.sessionTags) ? opts.sessionTags : [];
+  if (sessionTags.length > 0 && scored.length > 0) {
+    const tagIdfVals = Object.entries(idfMap)
+      .filter(([k]) => k.indexOf('_sp:') !== 0)
+      .map(([, v]) => v);
+    const avgIdf = tagIdfVals.length > 0
+      ? tagIdfVals.reduce((a, b) => a + b, 0) / tagIdfVals.length
+      : 1.0;
+    for (const entry of scored) {
+      const brainTags = Array.isArray(entry.brain.tags)
+        ? entry.brain.tags.map((t) => _str(t)).filter(Boolean)
+        : [];
+      const overlap = sessionTags.filter((t) => brainTags.includes(_str(t))).length;
+      if (overlap > 0) entry.score += 0.3 * overlap * avgIdf;
+    }
+    // Re-sort after bonus
+    scored.sort((a, b) => {
+      const d = b.score - a.score;
+      if (d !== 0) return d;
+      const pa = _num(a.brain.priority, 0), pb = _num(b.brain.priority, 0);
+      if (pb !== pa) return pb - pa;
+      return (a.brain.name ?? '').localeCompare(b.brain.name ?? '');
+    });
+  }
+
   // ── No matches ────────────────────────────────────────────────────────────
   if (!scored.length) {
     return _noMatchResult();
   }
 
   const top = scored[0];
-  const topMatchedTags = _getMatchedTags(top.brain, tokens);
+  const topMatchedTags = _getMatchedTags(top.brain, tokens, prompt);
   const topScores = scored.slice(0, 3).map((e) => ({
     brainId: e.brain.id ?? e.brain.name ?? '',
     brainName: e.brain.name ?? '',
@@ -379,18 +470,29 @@ function _noMatchResult() {
 
 /**
  * Return the subset of a brain's tags that fired against the token set.
+ * Uses the same matching rules as scoreBrain (multi-word, short-tag boundary, long partial).
  * Never throws; non-string tags are silently skipped.
  *
  * @param {*} brain
  * @param {string[]} tokens
+ * @param {string} [rawText] - Original prompt for phrase/boundary matching
  * @returns {string[]}
  */
-function _getMatchedTags(brain, tokens) {
+function _getMatchedTags(brain, tokens, rawText) {
   if (!brain || !Array.isArray(brain.tags)) return [];
   if (!Array.isArray(tokens) || !tokens.length) return [];
+  const raw = typeof rawText === 'string' ? rawText.toLowerCase() : '';
   return brain.tags.filter((tag) => {
     const t = _str(tag);
     if (!t) return false;
+    if (t.indexOf(' ') >= 0) return raw ? raw.includes(t) : false;
+    if (t.length < 5) {
+      if (!raw) return false;
+      try {
+        const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp('\\b' + esc + '\\b').test(raw);
+      } catch (_) { return false; }
+    }
     return tokens.some((tok) => typeof tok === 'string' && tok && (t.includes(tok) || tok.includes(t)));
   });
 }

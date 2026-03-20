@@ -1,6 +1,25 @@
 const BRAIN_FILES = [
+  // ── General ──────────────────────────────────────────────────────────────
   'brains/coding-architect.json',
   'brains/agent-builder.json',
+  'brains/venture-capitalist.json',
+  // ── Developer & Researcher pack ──────────────────────────────────────────
+  'brains/code-reviewer.json',
+  'brains/debug-detective.json',
+  'brains/api-designer.json',
+  'brains/frontend-engineer.json',
+  'brains/devops-engineer.json',
+  'brains/security-researcher.json',
+  'brains/database-optimizer.json',
+  'brains/performance-engineer.json',
+  'brains/technical-writer.json',
+  'brains/data-scientist.json',
+  'brains/research-synthesizer.json',
+  'brains/open-source-maintainer.json',
+  // ── Product & Design pack ────────────────────────────────────────────────
+  'brains/product-manager.json',
+  'brains/ux-designer.json',
+  'brains/legal-reviewer.json',
 ];
 
 // ── Built-in brain loader ─────────────────────────────────────────────────
@@ -219,14 +238,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           activations: 0,
           totalScore: 0,
           refusals: 0,
-          platforms: { chatgpt: 0, claude: 0, gemini: 0 },
+          platforms: { chatgpt: 0, claude: 0, gemini: 0, perplexity: 0 },
         };
       }
 
       const entry = analytics.brains[brainName];
       entry.activations = (entry.activations ?? 0) + 1;
       entry.totalScore  = (entry.totalScore  ?? 0) + score;
-      if (!entry.platforms) entry.platforms = { chatgpt: 0, claude: 0, gemini: 0 };
+      if (!entry.platforms) entry.platforms = { chatgpt: 0, claude: 0, gemini: 0, perplexity: 0 };
       entry.platforms[platform] = (entry.platforms[platform] ?? 0) + 1;
       analytics.totalActivations = (analytics.totalActivations ?? 0) + 1;
 
@@ -279,6 +298,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       console.log('[Synapse:Claude] CSP fallback activated for tab', tabId);
     }).catch((err) => {
       console.error('[Synapse:Claude] CSP fallback failed:', err.message);
+    });
+  }
+
+  if (msg.type === 'CSP_FALLBACK_NEEDED_PERPLEXITY') {
+    const tabId = sender?.tab?.id;
+    if (!tabId) return;
+    if (!/^https:\/\/www\.perplexity\.ai\//.test(sender.url ?? '')) return;
+    chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content-perplexity-main.js'],
+      world: 'MAIN',
+    }).then(() => {
+      console.log('[Synapse:Perplexity] CSP fallback activated for tab', tabId);
+    }).catch((err) => {
+      console.error('[Synapse:Perplexity] CSP fallback failed:', err.message);
     });
   }
 });
